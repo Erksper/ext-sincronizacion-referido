@@ -1,5 +1,5 @@
 {
-    "name": "Sincronizacion",
+    "name": "SincronizacionReferido",
     "version": "1.0.0",
     "description": "Módulo de sincronización con base de datos externa",
     "isCustom": true,

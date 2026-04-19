@@ -1,9 +1,9 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Handlers;
+namespace Espo\Modules\SincronizacionReferido\Handlers;
 
 use Espo\ORM\EntityManager;
-use Espo\Modules\Sincronizacion\Utils\StringUtils;
-use Espo\Modules\Sincronizacion\Traits\Loggable;
+use Espo\Modules\SincronizacionReferido\Utils\StringUtils;
+use Espo\Modules\SincronizacionReferido\Traits\Loggable;
 
 class TeamHandler
 {

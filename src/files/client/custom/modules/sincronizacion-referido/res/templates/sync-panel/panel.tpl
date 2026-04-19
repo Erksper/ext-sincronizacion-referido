@@ -16,19 +16,6 @@
             </div>
         </div>
 
-        <!-- Sección: Propiedades -->
-        <div class="sync-section">
-            <h5><i class="fas fa-home"></i> Propiedades</h5>
-            <div class="button-container">
-                <button type="button" class="btn btn-info" data-action="syncPropiedadesAnual">
-                    <i class="fas fa-calendar-alt"></i> Sincronizar Propiedades (Últimos 12 Meses)
-                </button>
-                <button type="button" class="btn btn-warning" data-action="syncPropiedadesCompleta">
-                    <i class="fas fa-database"></i> Sincronizar Propiedades (Completa)
-                </button>
-            </div>
-        </div>
-
         {{#if testResult}}
         <div class="margin-top-2x">
             <h5>Resultado de Prueba de Conexión:</h5>
@@ -58,30 +45,6 @@
                         <strong>Detalles:</strong>
                         <ul>
                             {{#each syncResult.details}}
-                            <li>{{this}}</li>
-                            {{/each}}
-                        </ul>
-                    </div>
-                    {{/if}}
-                </div>
-            </div>
-        </div>
-        {{/if}}
-
-        {{#if propiedadesResult}}
-        <div class="margin-top-2x">
-            <h5>Resultado de Sincronización de Propiedades:</h5>
-            <div class="alert alert-{{#if propiedadesResult.success}}success{{else}}danger{{/if}}">
-                {{propiedadesResult.message}}
-                <div class="margin-top">
-                    <strong>Tipo:</strong> {{propiedadesResult.tipo}}<br>
-                    <strong>Ejecutado:</strong> {{propiedadesResult.timestamp}}
-                    {{#if propiedadesResult.details}}
-                    <div class="sync-details">
-                        <hr>
-                        <strong>Resumen:</strong>
-                        <ul>
-                            {{#each propiedadesResult.details}}
                             <li>{{this}}</li>
                             {{/each}}
                         </ul>

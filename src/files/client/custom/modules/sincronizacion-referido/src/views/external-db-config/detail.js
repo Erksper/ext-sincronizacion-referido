@@ -1,4 +1,4 @@
-define('sincronizacion:views/external-db-config/detail', ['views/detail'], function (Dep) {
+define('sincronizacion-referido:views/external-db-config/detail', ['views/detail'], function (Dep) {
 
     return Dep.extend({
 

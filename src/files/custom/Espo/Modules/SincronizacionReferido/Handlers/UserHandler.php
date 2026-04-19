@@ -1,11 +1,11 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Handlers;
+namespace Espo\Modules\SincronizacionReferido\Handlers;
 
 use Espo\ORM\EntityManager;
-use Espo\Modules\Sincronizacion\Utils\StringUtils;
-use Espo\Modules\Sincronizacion\Handlers\ImageHandler;
-use Espo\Modules\Sincronizacion\Handlers\TeamHandler;
-use Espo\Modules\Sincronizacion\Traits\Loggable;
+use Espo\Modules\SincronizacionReferido\Utils\StringUtils;
+use Espo\Modules\SincronizacionReferido\Handlers\ImageHandler;
+use Espo\Modules\SincronizacionReferido\Handlers\TeamHandler;
+use Espo\Modules\SincronizacionReferido\Traits\Loggable;
 use Espo\Core\Utils\PasswordHash;
 
 class UserHandler
@@ -150,41 +150,48 @@ class UserHandler
     ): void {
         $username = $usuarioExterno['username'] ?? 'Unknown';
         $userData = $this->prepareUserData($usuarioExterno, $teamId, $rolesMap);
-        
+
         if (!$userData) {
             $summary['users']['skipped']++;
             return;
         }
-        
+
         try {
             $user = $this->entityManager->getNewEntity('User');
             $user->set('id', $userId);
             $user->set($userData);
-            
+
             $hashedPassword = $this->passwordHash->hash($usuarioExterno['password']);
             $user->set('password', $hashedPassword);
-            
+
             $this->entityManager->saveEntity($user);
-            
-            $imageFieldName = $this->imageHandler->getImageFieldName();
+
+            // Asignar las tres URLs basadas en el ID del asesor
+            $user->set('cQr', 'https://referido.century21.com.ve/eb/?lerr=' . $userId);
+            $user->set('cCarnet', 'https://referido.century21.com.ve/eb/carnet.php?lerr=' . $userId);
+            $user->set('cURLPerfil', 'https://referido.century21.com.ve/eb/profile.php?lerr=' . $userId);
+
+            // Procesar imagen
             $fotoPath = $usuarioExterno['fotoPath'] ?? null;
             $imageResult = $this->imageHandler->processUserImage($fotoPath, null);
-            
+
             if ($imageResult['imageId']) {
-                $user->set($imageFieldName, $imageResult['imageId']);
+                // Guardar en cFotop y como avatar
+                $user->set('cFotop', $imageResult['imageId']);
+                $user->set('avatarId', $imageResult['imageId']);
                 $this->entityManager->saveEntity($user);
             }
-            
+
             $this->assignUserToTeams($user, $teamId, $claId);
-            
+
             $summary['users']['created']++;
             $this->log('created', 'User', $userId, "usuario: ({$userId}) {$username}", 'success',
-                      "Usuario creado", $configId);
-            
+                    "Usuario creado", $configId);
+
         } catch (\Exception $e) {
             $summary['users']['errors']++;
             $this->log('error', 'User', $userId, "id: ({$userId}) {$username}", 'error',
-                      "Error al crear: " . $e->getMessage(), $configId);
+                    "Error al crear: " . $e->getMessage(), $configId);
             throw $e;
         }
     }
@@ -202,52 +209,52 @@ class UserHandler
         $userId = $user->getId();
         $changes = [];
         $needsUpdate = false;
-        
+
         $currentTeamId = $user->get('defaultTeamId');
-        
+
         if ($currentTeamId && !$this->teamHandler->teamExists($currentTeamId)) {
             if ($user->get('isActive')) {
                 $user->set('isActive', false);
                 $needsUpdate = true;
                 $changes[] = "desactivado por equipo inexistente";
                 $this->log('info', 'User', $userId, "id: ({$userId}) {$username}", 'warning',
-                          "Usuario desactivado porque su equipo no existe", $configId);
+                        "Usuario desactivado porque su equipo no existe", $configId);
             }
         }
-        
+
         $userData = $this->prepareUserData($usuarioExterno, $teamId, $rolesMap);
-        
+
         if (!$userData) {
             return;
         }
-        
+
+        // Actualizar campos escalares
         foreach ($userData as $field => $newValue) {
             if ($field === 'rolesIds') {
                 continue;
             }
-            
             $currentValue = $user->get($field);
             $normalizedCurrent = StringUtils::normalize($currentValue);
             $normalizedNew = StringUtils::normalize($newValue);
-            
             if ($normalizedCurrent !== $normalizedNew) {
                 $user->set($field, $newValue);
                 $needsUpdate = true;
                 $changes[] = $field;
             }
         }
-        
+
+        // Roles
         $rolesChanged = $this->updateUserRoles($user, $userData['rolesIds'] ?? [], $rolesMap);
         if ($rolesChanged) {
             $needsUpdate = true;
             $changes[] = "roles";
         }
-        
+
+        // Contraseña
         if (!empty($usuarioExterno['password'])) {
             $currentPasswordHash = $user->get('password');
             $plainPassword = $usuarioExterno['password'];
             $passwordChanged = empty($currentPasswordHash) || !password_verify($plainPassword, $currentPasswordHash);
-            
             if ($passwordChanged) {
                 $hashedPassword = $this->passwordHash->hash($plainPassword);
                 $user->set('password', $hashedPassword);
@@ -255,34 +262,56 @@ class UserHandler
                 $changes[] = "password";
             }
         }
-        
-        $imageFieldName = $this->imageHandler->getImageFieldName();
+
+        // Imagen
         $fotoPath = $usuarioExterno['fotoPath'] ?? null;
         $fotoUrlNueva = !empty($fotoPath) ? 'https://venezuela.21online.lat/' . ltrim($fotoPath, '/') : null;
         $fotoUrlActual = $user->get('cFoto');
-        
         if ($fotoUrlNueva !== $fotoUrlActual) {
-            $imageResult = $this->imageHandler->processUserImage($fotoPath, $user->get($imageFieldName));
-            
+            $currentImageId = $user->get('cFotop'); // usamos cFotop como referencia actual
+            $imageResult = $this->imageHandler->processUserImage($fotoPath, $currentImageId);
             if ($imageResult['updated']) {
-                $user->set($imageFieldName, $imageResult['imageId']);
+                $user->set('cFotop', $imageResult['imageId']);
+                $user->set('avatarId', $imageResult['imageId']);
                 $needsUpdate = true;
                 $changes[] = "imagen";
             }
         }
-        
+
+        // URLs (siempre se actualizan por si el ID cambió, aunque no debería)
+        $expectedQr = 'https://referido.century21.com.ve/eb/?lerr=' . $userId;
+        $expectedCarnet = 'https://referido.century21.com.ve/eb/carnet.php?lerr=' . $userId;
+        $expectedPerfil = 'https://referido.century21.com.ve/eb/profile.php?lerr=' . $userId;
+
+        if ($user->get('cQr') !== $expectedQr) {
+            $user->set('cQr', $expectedQr);
+            $needsUpdate = true;
+            $changes[] = "cQr";
+        }
+        if ($user->get('cCarnet') !== $expectedCarnet) {
+            $user->set('cCarnet', $expectedCarnet);
+            $needsUpdate = true;
+            $changes[] = "cCarnet";
+        }
+        if ($user->get('cURLPerfil') !== $expectedPerfil) {
+            $user->set('cURLPerfil', $expectedPerfil);
+            $needsUpdate = true;
+            $changes[] = "cURLPerfil";
+        }
+
         if ($needsUpdate) {
             $this->entityManager->saveEntity($user);
-            
+            $this->entityManager->saveEntity($user);
+
             if ($user->get('defaultTeamId') !== $teamId) {
                 $this->assignUserToTeams($user, $teamId, $claId);
                 $changes[] = "equipos";
             }
-            
+
             $summary['users']['updated']++;
             $changesStr = implode(', ', $changes);
             $this->log('updated', 'User', $userId, "usuario: ({$userId}) {$username}", 'success',
-                      "Usuario actualizado: {$changesStr}", $configId);
+                    "Usuario actualizado: {$changesStr}", $configId);
         } else {
             $summary['users']['no_changes']++;
         }

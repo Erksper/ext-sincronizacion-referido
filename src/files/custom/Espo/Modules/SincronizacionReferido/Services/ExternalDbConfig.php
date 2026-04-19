@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Services;
+namespace Espo\Modules\SincronizacionReferido\Services;
 
 use Espo\Core\Exceptions\Forbidden;
 use Espo\Services\Record;

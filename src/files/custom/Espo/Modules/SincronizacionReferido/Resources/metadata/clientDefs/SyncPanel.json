@@ -1,5 +1,5 @@
 {
-    "controller": "sincronizacion:controllers/sync-panel",
+    "controller": "sincronizacion-referido:controllers/sync-panel",
     "iconClass": "fas fa-sync-alt", 
     "color": "#28a745",
     "defaultAction": "list"

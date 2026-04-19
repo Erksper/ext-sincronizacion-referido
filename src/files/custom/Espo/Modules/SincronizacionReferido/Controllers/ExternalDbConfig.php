@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Controllers;
+namespace Espo\Modules\SincronizacionReferido\Controllers;
 
 use Espo\Core\Controllers\Record;
 use Espo\Core\Api\Request;
@@ -21,7 +21,7 @@ class ExternalDbConfig extends Record
         }
         
         try {
-            $job = $this->injectableFactory->create('Espo\\Modules\\Sincronizacion\\Jobs\\SincronizarDatosExternos');
+            $job = $this->injectableFactory->create('Espo\\Modules\\SincronizacionReferido\\Jobs\\SincronizarDatosExternos');
             
             ob_start();
             $job->run();

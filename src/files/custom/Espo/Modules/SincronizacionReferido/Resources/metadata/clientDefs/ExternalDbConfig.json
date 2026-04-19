@@ -5,7 +5,7 @@
   "createDisabled": false,
   "searchPanelDisabled": false,
   "views": {
-    "detail": "sincronizacion:views/external-db-config/detail"
+    "detail": "sincronizacion-referido:views/external-db-config/detail"
   },
   "filterList": [
     "active"

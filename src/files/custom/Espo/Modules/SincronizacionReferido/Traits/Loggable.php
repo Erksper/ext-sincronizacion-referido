@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Traits;
+namespace Espo\Modules\SincronizacionReferido\Traits;
 
 trait Loggable
 {

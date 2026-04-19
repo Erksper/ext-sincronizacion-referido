@@ -1,4 +1,4 @@
-define('sincronizacion:controllers/sync-panel', ['controllers/base'], function (Dep) {
+define('sincronizacion-referido:controllers/sync-panel', ['controllers/base'], function (Dep) {
 
     return Dep.extend({
 
@@ -9,7 +9,7 @@ define('sincronizacion:controllers/sync-panel', ['controllers/base'], function (
 
         // La acción principal que carga la vista
         actionList: function () {
-            this.main('sincronizacion:views/sync-panel/panel', {
+            this.main('sincronizacion-referido:views/sync-panel/panel', {
                 scope: 'SyncPanel'
             });
         }

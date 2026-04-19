@@ -1,6 +1,6 @@
 <?php
 
-namespace Espo\Modules\Sincronizacion\Controllers;
+namespace Espo\Modules\SincronizacionReferido\Controllers;
 
 use Espo\Core\Controllers\Record;
 

@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Hooks\ExternalDbConfig;
+namespace Espo\Modules\SincronizacionReferido\Hooks\ExternalDbConfig;
 
 use Espo\Core\Hook\Hook\BeforeSave as BeforeSaveHook;
 use Espo\ORM\Entity;

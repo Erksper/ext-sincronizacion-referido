@@ -1,14 +1,14 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Jobs;
+namespace Espo\Modules\SincronizacionReferido\Jobs;
 
 use Espo\Core\Job\JobDataLess;
 use Espo\Core\InjectableFactory;
 use Espo\ORM\EntityManager;
 use Espo\Core\Utils\PasswordHash;
-use Espo\Modules\Sincronizacion\Handlers\TeamHandler;
-use Espo\Modules\Sincronizacion\Handlers\UserHandler;
-use Espo\Modules\Sincronizacion\Handlers\ImageHandler;
-use Espo\Modules\Sincronizacion\Traits\Loggable;
+use Espo\Modules\SincronizacionReferido\Handlers\TeamHandler;
+use Espo\Modules\SincronizacionReferido\Handlers\UserHandler;
+use Espo\Modules\SincronizacionReferido\Handlers\ImageHandler;
+use Espo\Modules\SincronizacionReferido\Traits\Loggable;
 use PDO;
 use PDOException;
 

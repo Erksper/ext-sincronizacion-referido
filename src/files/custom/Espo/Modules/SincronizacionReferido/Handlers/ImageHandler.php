@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Handlers;
+namespace Espo\Modules\SincronizacionReferido\Handlers;
 
 use Espo\ORM\EntityManager;
 
@@ -7,7 +7,7 @@ class ImageHandler
 {
     private EntityManager $entityManager;
     private const DEFAULT_USER_USERNAME = '0';
-    private const IMAGE_FIELD = 'cImagenId';
+    private const IMAGE_FIELD = 'cFotop'; // Cambiado de cImagenId a cFotop
     
     public function __construct(EntityManager $entityManager)
     {
@@ -28,7 +28,7 @@ class ImageHandler
             $imageId = $defaultUser->get(self::IMAGE_FIELD);
             
             if (empty($imageId)) {
-                $alternativeFields = ['cImageId', 'cimageId', 'cImagen', 'avatarId'];
+                $alternativeFields = ['cImagenId', 'cImageId', 'avatarId'];
                 foreach ($alternativeFields as $altField) {
                     $altValue = $defaultUser->get($altField);
                     if (!empty($altValue)) {
@@ -39,7 +39,6 @@ class ImageHandler
             }
             
             return $imageId;
-            
         } catch (\Exception $e) {
             return null;
         }
@@ -71,12 +70,18 @@ class ImageHandler
                 'role' => 'Attachment',
                 'size' => strlen($imageContent),
                 'relatedType' => 'User',
-                'field' => 'cImagen'
+                'field' => self::IMAGE_FIELD
             ]);
             
             $this->entityManager->saveEntity($attachment);
             
             $filePath = "data/upload/" . $attachment->getId();
+            
+            // Crear directorio si no existe
+            $dir = dirname($filePath);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0777, true);
+            }
             
             if (file_put_contents($filePath, $imageContent) === false) {
                 $this->entityManager->removeEntity($attachment);
@@ -84,7 +89,6 @@ class ImageHandler
             }
             
             return $attachment->getId();
-            
         } catch (\Exception $e) {
             return null;
         }
@@ -114,13 +118,9 @@ class ImageHandler
             return $result;
         }
         
+        // No hay fotoPath: asignar imagen por defecto
         $defaultImageId = $this->getDefaultImageId();
-        
-        if ($defaultImageId === null) {
-            return $result;
-        }
-        
-        if ($currentImageId !== $defaultImageId) {
+        if ($defaultImageId !== null && $currentImageId !== $defaultImageId) {
             $result['imageId'] = $defaultImageId;
             $result['updated'] = true;
         }
@@ -142,7 +142,6 @@ class ImageHandler
             'gif'  => 'image/gif',
             'webp' => 'image/webp'
         ];
-        
         return $mimeTypes[$extension] ?? 'image/jpeg';
     }
 }

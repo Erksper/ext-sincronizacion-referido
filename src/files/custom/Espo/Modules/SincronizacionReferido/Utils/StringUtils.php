@@ -1,5 +1,5 @@
 <?php
-namespace Espo\Modules\Sincronizacion\Utils;
+namespace Espo\Modules\SincronizacionReferido\Utils;
 
 /**
  * Utilidades para formateo de strings
