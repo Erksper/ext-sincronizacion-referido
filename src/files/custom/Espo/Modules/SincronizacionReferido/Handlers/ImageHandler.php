@@ -7,141 +7,197 @@ class ImageHandler
 {
     private EntityManager $entityManager;
     private const DEFAULT_USER_USERNAME = '0';
-    private const IMAGE_FIELD = 'cFotop'; // Cambiado de cImagenId a cFotop
-    
+    // Campos correctos para tipo image en EspoCRM (usan sufijo Id internamente)
+    private const IMAGE_ID_FIELD   = 'cFotopId';  // lo que se lee/escribe en PHP
+    private const IMAGE_PATH_FIELD = 'cFoto';     // varchar para guardar el path raw
+
+    private ?string $defaultImageIdCache  = null;
+    private bool    $defaultImageResolved = false;
+
     public function __construct(EntityManager $entityManager)
     {
         $this->entityManager = $entityManager;
     }
-    
+
+    /**
+     * Obtiene el attachment ID de la foto del usuario "0" (imagen por defecto).
+     * Usa cache en memoria para no golpear la BD en cada usuario.
+     */
     public function getDefaultImageId(): ?string
     {
+        if ($this->defaultImageResolved) {
+            return $this->defaultImageIdCache;
+        }
+
+        $this->defaultImageResolved = true;
+
         try {
             $defaultUser = $this->entityManager->getRDBRepository('User')
                 ->where(['userName' => self::DEFAULT_USER_USERNAME])
                 ->findOne();
-            
+
             if (!$defaultUser) {
+                $this->defaultImageIdCache = null;
                 return null;
             }
-            
-            $imageId = $defaultUser->get(self::IMAGE_FIELD);
-            
+
+            // Leer con sufijo Id (campo image)
+            $imageId = $defaultUser->get(self::IMAGE_ID_FIELD);
+
             if (empty($imageId)) {
-                $alternativeFields = ['cImagenId', 'cImageId', 'avatarId'];
-                foreach ($alternativeFields as $altField) {
-                    $altValue = $defaultUser->get($altField);
-                    if (!empty($altValue)) {
-                        return $altValue;
-                    }
-                }
-                return null;
+                $imageId = $defaultUser->get('avatarId');
             }
-            
-            return $imageId;
+
+            $this->defaultImageIdCache = !empty($imageId) ? $imageId : null;
+            return $this->defaultImageIdCache;
+
         } catch (\Exception $e) {
+            $this->defaultImageIdCache = null;
             return null;
         }
     }
-    
+
+    /**
+     * Descarga una imagen desde la URL externa y la guarda como Attachment en EspoCRM.
+     */
     public function downloadAndSaveImage(string $fotoPath): ?string
     {
         try {
-            $url = "https://venezuela.21online.lat/" . ltrim($fotoPath, '/');
+            $url          = "https://venezuela.21online.lat/" . ltrim($fotoPath, '/');
             $imageContent = @file_get_contents($url);
-            
+
             if ($imageContent === false || strlen($imageContent) === 0) {
                 return null;
             }
-            
-            $fileInfo = pathinfo($fotoPath);
+
+            $fileInfo  = pathinfo($fotoPath);
             $extension = strtolower($fileInfo['extension'] ?? 'jpg');
-            $fileName = $fileInfo['basename'] ?? 'avatar.' . $extension;
-            
+            $fileName  = $fileInfo['basename'] ?? 'avatar.' . $extension;
+
             $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
             if (!in_array($extension, $allowedExtensions)) {
                 return null;
             }
-            
+
             $attachment = $this->entityManager->getNewEntity('Attachment');
             $attachment->set([
-                'name' => $fileName,
-                'type' => $this->getMimeType($extension),
-                'role' => 'Attachment',
-                'size' => strlen($imageContent),
+                'name'        => $fileName,
+                'type'        => $this->getMimeType($extension),
+                'role'        => 'Attachment',
+                'size'        => strlen($imageContent),
                 'relatedType' => 'User',
-                'field' => self::IMAGE_FIELD
+                'field'       => 'cFotop', // nombre del campo image (sin Id)
             ]);
-            
+
             $this->entityManager->saveEntity($attachment);
-            
+
             $filePath = "data/upload/" . $attachment->getId();
-            
-            // Crear directorio si no existe
-            $dir = dirname($filePath);
+            $dir      = dirname($filePath);
+
             if (!is_dir($dir)) {
                 mkdir($dir, 0777, true);
             }
-            
+
             if (file_put_contents($filePath, $imageContent) === false) {
                 $this->entityManager->removeEntity($attachment);
                 return null;
             }
-            
+
             return $attachment->getId();
+
         } catch (\Exception $e) {
             return null;
         }
     }
-    
-    public function processUserImage(?string $fotoPath, ?string $currentImageId): array
-    {
+
+    /**
+     * Procesa la imagen de un usuario.
+     *
+     * CASO 1 — Tiene fotoPath en BD externa:
+     *   - Si cFoto actual == fotoPath nuevo → misma foto, no hacer nada.
+     *   - Si es diferente → descargar y actualizar.
+     *
+     * CASO 2 — No tiene fotoPath en BD externa:
+     *   - Subcaso A: cFotopId == defaultImageId → correcto, nada que hacer.
+     *   - Subcaso B: cFotopId null pero avatarId == defaultImageId → solo poblar cFotopId.
+     *   - Subcaso C: ninguno tiene la imagen por defecto → asignar a ambos.
+     *
+     * @param string|null $fotoPath         Path raw desde BD externa
+     * @param string|null $currentImageId   Valor de cFotopId actual
+     * @param string|null $currentFotoPath  Valor de cFoto actual (path raw)
+     * @param string|null $currentAvatarId  Valor de avatarId actual
+     *
+     * @return array{imageId: string|null, fotoPath: string|null, updated: bool, syncCFotopOnly: bool}
+     */
+    public function processUserImage(
+        ?string $fotoPath,
+        ?string $currentImageId,
+        ?string $currentFotoPath = null,
+        ?string $currentAvatarId = null
+    ): array {
         $result = [
-            'imageId' => $currentImageId,
-            'updated' => false
+            'imageId'        => $currentImageId,
+            'fotoPath'       => $currentFotoPath,
+            'updated'        => false,
+            'syncCFotopOnly' => false,
         ];
-        
+
+        // ── CASO 1: viene foto desde la BD externa ───────────────────────────
         if (!empty($fotoPath)) {
-            $newImageId = $this->downloadAndSaveImage($fotoPath);
-            
-            if ($newImageId !== null && $newImageId !== $currentImageId) {
-                $result['imageId'] = $newImageId;
-                $result['updated'] = true;
-            } else if ($newImageId === null && empty($currentImageId)) {
-                $defaultId = $this->getDefaultImageId();
-                if ($defaultId) {
-                    $result['imageId'] = $defaultId;
-                    $result['updated'] = true;
-                }
+            // Mismo path raw → foto sin cambios
+            if ($currentFotoPath !== null && $currentFotoPath === $fotoPath) {
+                return $result;
             }
-            
+
+            $newImageId = $this->downloadAndSaveImage($fotoPath);
+
+            if ($newImageId !== null) {
+                $result['imageId']  = $newImageId;
+                $result['fotoPath'] = $fotoPath;
+                $result['updated']  = true;
+            }
+
             return $result;
         }
-        
-        // No hay fotoPath: asignar imagen por defecto
+
+        // ── CASO 2: no viene foto desde la BD externa ────────────────────────
         $defaultImageId = $this->getDefaultImageId();
-        if ($defaultImageId !== null && $currentImageId !== $defaultImageId) {
-            $result['imageId'] = $defaultImageId;
-            $result['updated'] = true;
+
+        if ($defaultImageId === null) {
+            return $result;
         }
-        
+
+        // Subcaso A: cFotopId ya tiene la imagen por defecto → nada que hacer
+        if (!empty($currentImageId) && $currentImageId === $defaultImageId) {
+            return $result;
+        }
+
+        // Subcaso B: cFotopId null pero avatarId ya tiene la imagen por defecto
+        // → solo poblar cFotopId, sin tocar avatarId ni descargar
+        if (empty($currentImageId) && !empty($currentAvatarId) && $currentAvatarId === $defaultImageId) {
+            $result['imageId']        = $defaultImageId;
+            $result['fotoPath']       = null;
+            $result['updated']        = true;
+            $result['syncCFotopOnly'] = true;
+            return $result;
+        }
+
+        // Subcaso C: ninguno tiene la imagen por defecto → asignar a ambos
+        $result['imageId']  = $defaultImageId;
+        $result['fotoPath'] = null;
+        $result['updated']  = true;
+
         return $result;
     }
-    
-    public function getImageFieldName(): string
-    {
-        return self::IMAGE_FIELD;
-    }
-    
+
     private function getMimeType(string $extension): string
     {
-        $mimeTypes = [
+        return [
             'jpg'  => 'image/jpeg',
             'jpeg' => 'image/jpeg',
             'png'  => 'image/png',
             'gif'  => 'image/gif',
-            'webp' => 'image/webp'
-        ];
-        return $mimeTypes[$extension] ?? 'image/jpeg';
+            'webp' => 'image/webp',
+        ][$extension] ?? 'image/jpeg';
     }
 }
