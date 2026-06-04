@@ -4,10 +4,10 @@ namespace Espo\Modules\SincronizacionReferido\Jobs;
 use Espo\Core\Job\JobDataLess;
 use Espo\Core\InjectableFactory;
 use Espo\ORM\EntityManager;
-use Espo\Core\Utils\PasswordHash;
 use Espo\Modules\SincronizacionReferido\Handlers\TeamHandler;
 use Espo\Modules\SincronizacionReferido\Handlers\UserHandler;
 use Espo\Modules\SincronizacionReferido\Handlers\ImageHandler;
+use Espo\Modules\SincronizacionReferido\Handlers\PropiedadHandler;
 use Espo\Modules\SincronizacionReferido\Traits\Loggable;
 use PDO;
 use PDOException;
@@ -58,14 +58,16 @@ class SincronizarDatosExternos implements JobDataLess
                 return;
             }
             
-            $sqlUsuarios = "SELECT id, idAfiliados, nombre, apellidoM, apellidoP, username, password, email, telMovil, puesto, fotoPath 
+            // Usuarios activos (sin password)
+            $sqlUsuarios = "SELECT id, idAfiliados, nombre, apellidoM, apellidoP, username, email, telMovil, puesto, fotoPath 
                         FROM usuarios 
                         WHERE isActive = 1 AND idAfiliados IS NOT NULL";
             $stmtUsuarios = $pdo->prepare($sqlUsuarios);
             $stmtUsuarios->execute();
             $usuariosExternos = $stmtUsuarios->fetchAll(PDO::FETCH_ASSOC);
             
-            $sqlUsuariosInactivos = "SELECT id, idAfiliados, nombre, apellidoM, apellidoP, username, password, email, telMovil, puesto, fotoPath 
+            // Usuarios inactivos (sin password)
+            $sqlUsuariosInactivos = "SELECT id, idAfiliados, nombre, apellidoM, apellidoP, username, email, telMovil, puesto, fotoPath 
                                 FROM usuarios 
                                 WHERE isActive = 0 AND idAfiliados IS NOT NULL";
             $stmtUsuariosInactivos = $pdo->prepare($sqlUsuariosInactivos);
@@ -88,43 +90,45 @@ class SincronizarDatosExternos implements JobDataLess
             $stmtRoles->execute();
             $rolesExternos = $stmtRoles->fetchAll(PDO::FETCH_COLUMN);
             
-            $pdo = null;
-            
             $this->log('info', 'Datos', null, 'Consulta', 'success',
                     "Usuarios activos: " . count($usuariosExternos) . 
                     ", Inactivos: " . count($usuariosInactivos) . 
                     ", Afiliados: " . count($afiliadosExternos) . 
                     ", Roles: " . count($rolesExternos), $config['id']);
             
-            $passwordHash = $this->injectableFactory->create(PasswordHash::class);
+            // Handlers sin PasswordHash
             $imageHandler = new ImageHandler($this->entityManager);
             $teamHandler = new TeamHandler($this->entityManager);
-            $userHandler = new UserHandler($this->entityManager, $imageHandler, $teamHandler, $passwordHash);
+            $userHandler = new UserHandler($this->entityManager, $imageHandler, $teamHandler);
             
             $summary = [
                 'roles' => ['created' => 0, 'existing' => 0, 'errors' => 0],
                 'clas' => ['created' => 0, 'existing' => 0, 'errors' => 0],
                 'teams' => ['created' => 0, 'updated' => 0, 'deleted' => 0, 'no_changes' => 0, 'skipped' => 0, 'errors' => 0],
-                'users' => ['created' => 0, 'updated' => 0, 'disabled' => 0, 'errors' => 0, 'skipped' => 0, 'no_changes' => 0]
+                'users' => ['created' => 0, 'updated' => 0, 'disabled' => 0, 'errors' => 0, 'skipped' => 0, 'no_changes' => 0],
+                'propiedades' => ['created' => 0, 'updated' => 0, 'no_changes' => 0, 'skipped' => 0, 'errors' => 0],
             ];
             
             $this->syncRoles($rolesExternos, $config['id'], $summary);
-            
             $teamHandler->syncCLAs($config['id'], $summary);
-            
             $teamHandler->syncAfiliados($afiliadosExternos, $config['id'], $summary);
-            
             $userHandler->syncUsuarios($usuariosExternos, $usuariosInactivos, $afiliadosExternos, $rolesExternos, $config['id'], $summary);
+            
+            // Sincronizar propiedades
+            $propiedadHandler = new PropiedadHandler($this->entityManager);
+            $propiedadHandler->syncPropiedades($pdo, 'completa', $config['id'], $summary);
+            
+            $pdo = null;
             
             $this->cleanOldLogs();
             
             $hasErrors = $summary['roles']['errors'] > 0 || 
                         $summary['clas']['errors'] > 0 || 
                         $summary['teams']['errors'] > 0 || 
-                        $summary['users']['errors'] > 0;
+                        $summary['users']['errors'] > 0 ||
+                        $summary['propiedades']['errors'] > 0;
             
             $status = $hasErrors ? 'error' : 'success';
-            
             $this->updateConfigStatus($config['id'], $status);
             
             $elapsed = round(microtime(true) - $startTime, 2);
@@ -134,6 +138,7 @@ class SincronizarDatosExternos implements JobDataLess
                 "CLAs - Creados: %d | Existentes: %d | " .
                 "Oficinas - Creadas: %d | Actualizadas: %d | Sin cambios: %d | Eliminadas: %d | Omitidas: %d | Errores: %d | " .
                 "Usuarios - Creados: %d | Actualizados: %d | Desactivados: %d | Sin cambios: %d | Omitidos: %d | Errores: %d | " .
+                "Propiedades - Creadas: %d | Actualizadas: %d | Sin cambios: %d | Omitidas: %d | Errores: %d | " .
                 "Tiempo: %ss",
                 $summary['roles']['created'], $summary['roles']['existing'], $summary['roles']['errors'],
                 $summary['clas']['created'], $summary['clas']['existing'],
@@ -141,6 +146,8 @@ class SincronizarDatosExternos implements JobDataLess
                 $summary['teams']['deleted'], $summary['teams']['skipped'] ?? 0, $summary['teams']['errors'],
                 $summary['users']['created'], $summary['users']['updated'], $summary['users']['disabled'], 
                 $summary['users']['no_changes'], $summary['users']['skipped'], $summary['users']['errors'],
+                $summary['propiedades']['created'], $summary['propiedades']['updated'], $summary['propiedades']['no_changes'],
+                $summary['propiedades']['skipped'], $summary['propiedades']['errors'],
                 $elapsed
             );
             
@@ -167,30 +174,23 @@ class SincronizarDatosExternos implements JobDataLess
         foreach ($rolesExternos as $puestoOriginal) {
             try {
                 $nombreRol = $puestoOriginal;
-                
                 $rol = $this->entityManager->getRDBRepository('Role')
                     ->where(['name' => $nombreRol])
                     ->findOne();
-                
                 if (!$rol) {
                     $rol = $this->entityManager->getNewEntity('Role');
                     $rol->set('name', $nombreRol);
                     $this->entityManager->saveEntity($rol);
-                    
                     $summary['roles']['created']++;
-                    $this->log('created', 'Role', $rol->getId(), $nombreRol, 'success',
-                              "Rol creado", $configId);
+                    $this->log('created', 'Role', $rol->getId(), $nombreRol, 'success', "Rol creado", $configId);
                 } else {
                     $summary['roles']['existing']++;
                 }
-                
             } catch (\Exception $e) {
                 $summary['roles']['errors']++;
-                $this->log('error', 'Role', null, $puestoOriginal, 'error',
-                          "Error creando rol: " . $e->getMessage(), $configId);
+                $this->log('error', 'Role', null, $puestoOriginal, 'error', "Error creando rol: " . $e->getMessage(), $configId);
             }
         }
-        
         $this->log('info', 'Role', null, 'Resumen Roles', 'success',
                   "Creados: {$summary['roles']['created']} | Existentes: {$summary['roles']['existing']} | Errores: {$summary['roles']['errors']}", $configId);
     }
@@ -202,20 +202,16 @@ class SincronizarDatosExternos implements JobDataLess
             $oldLogs = $this->entityManager->getRDBRepository('SyncLog')
                 ->where(['syncDate<' => $date30DaysAgo])
                 ->find();
-            
             $count = 0;
             foreach ($oldLogs as $log) {
                 $this->entityManager->removeEntity($log);
                 $count++;
             }
-            
             if ($count > 0) {
-                $this->log('info', 'Mantenimiento', null, 'Limpieza Logs', 'success',
-                          "Logs antiguos eliminados: {$count}", null);
+                $this->log('info', 'Mantenimiento', null, 'Limpieza Logs', 'success', "Logs antiguos eliminados: {$count}", null);
             }
         } catch (\Exception $e) {
-            $this->log('error', 'Mantenimiento', null, 'Limpieza Logs', 'error',
-                      "Error limpiando logs: " . $e->getMessage(), null);
+            $this->log('error', 'Mantenimiento', null, 'Limpieza Logs', 'error', "Error limpiando logs: " . $e->getMessage(), null);
         }
     }
     
@@ -224,14 +220,10 @@ class SincronizarDatosExternos implements JobDataLess
         try {
             $config = $this->entityManager->getEntityById('ExternalDbConfig', $configId);
             if ($config) {
-                $config->set([
-                    'lastSync' => date('Y-m-d H:i:s'),
-                    'lastSyncStatus' => $status
-                ]);
+                $config->set(['lastSync' => date('Y-m-d H:i:s'), 'lastSyncStatus' => $status]);
                 $this->entityManager->saveEntity($config);
             }
-        } catch (\Exception $e) {
-        }
+        } catch (\Exception $e) {}
     }
     
     private function getActiveConfig(): ?array
@@ -242,11 +234,7 @@ class SincronizarDatosExternos implements JobDataLess
                 ->where(['isActive' => true])
                 ->order('createdAt', 'DESC')
                 ->findOne();
-            
-            if (!$config) {
-                return null;
-            }
-            
+            if (!$config) return null;
             return [
                 'id' => $config->getId(),
                 'name' => $config->get('name'),
@@ -264,26 +252,17 @@ class SincronizarDatosExternos implements JobDataLess
     
     private function decrypt(string $encryptedValue): string
     {
-        if (empty($encryptedValue)) {
-            return '';
-        }
-        
+        if (empty($encryptedValue)) return '';
         try {
             $config = $this->injectableFactory->create('Espo\\Core\\Utils\\Config');
             $passwordSalt = $config->get('passwordSalt');
             $siteUrl = $config->get('siteUrl');
             $secretKey = hash('sha256', $passwordSalt . $siteUrl, true);
-            
             $data = base64_decode($encryptedValue, true);
-            if ($data === false) {
-                return $encryptedValue;
-            }
-            
+            if ($data === false) return $encryptedValue;
             $iv = substr($data, 0, 16);
             $encrypted = substr($data, 16);
-            
             $decrypted = openssl_decrypt($encrypted, 'aes-256-cbc', $secretKey, OPENSSL_RAW_DATA, $iv);
-            
             return $decrypted !== false ? $decrypted : $encryptedValue;
         } catch (\Exception $e) {
             return $encryptedValue;
@@ -294,14 +273,11 @@ class SincronizarDatosExternos implements JobDataLess
     {
         try {
             $dsn = "mysql:host={$config['host']};port={$config['port']};dbname={$config['database']};charset=utf8mb4";
-            
-            $pdo = new PDO($dsn, $config['username'], $config['password'], [
+            return new PDO($dsn, $config['username'], $config['password'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_TIMEOUT => 10
             ]);
-            
-            return $pdo;
         } catch (PDOException $e) {
             return null;
         }

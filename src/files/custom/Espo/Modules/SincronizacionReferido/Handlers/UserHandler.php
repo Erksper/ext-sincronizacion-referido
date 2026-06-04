@@ -6,7 +6,6 @@ use Espo\Modules\SincronizacionReferido\Utils\StringUtils;
 use Espo\Modules\SincronizacionReferido\Handlers\ImageHandler;
 use Espo\Modules\SincronizacionReferido\Handlers\TeamHandler;
 use Espo\Modules\SincronizacionReferido\Traits\Loggable;
-use Espo\Core\Utils\PasswordHash;
 
 class UserHandler
 {
@@ -15,18 +14,15 @@ class UserHandler
     private EntityManager $entityManager;
     private ImageHandler  $imageHandler;
     private TeamHandler   $teamHandler;
-    private PasswordHash  $passwordHash;
 
     public function __construct(
         EntityManager $entityManager,
         ImageHandler  $imageHandler,
-        TeamHandler   $teamHandler,
-        PasswordHash  $passwordHash
+        TeamHandler   $teamHandler
     ) {
         $this->entityManager = $entityManager;
         $this->imageHandler  = $imageHandler;
         $this->teamHandler   = $teamHandler;
-        $this->passwordHash  = $passwordHash;
     }
 
     public function syncUsuarios(
@@ -156,38 +152,27 @@ class UserHandler
             $user->set('id', $userId);
             $user->set($userData);
 
-            $hashedPassword = $this->passwordHash->hash($usuarioExterno['password']);
-            $user->set('password', $hashedPassword);
+            // No se asigna contraseña (OAuth2)
 
             $this->entityManager->saveEntity($user);
 
-            // URLs basadas en el ID del asesor
+            // URLs específicas del módulo referido
             $user->set('cQr',        'https://referido.century21.com.ve/eb/?lerr='           . $userId);
             $user->set('cCarnet',    'https://referido.century21.com.ve/eb/carnet.php?lerr='  . $userId);
             $user->set('cURLPerfil', 'https://referido.century21.com.ve/eb/profile.php?lerr=' . $userId);
 
-            // ── Imagen ──────────────────────────────────────────────────────
             $fotoPath    = $usuarioExterno['fotoPath'] ?? null;
-            $imageResult = $this->imageHandler->processUserImage(
-                $fotoPath,
-                null,  // cFotopId — no existe aún
-                null,  // cFoto    — no existe aún
-                null   // avatarId — no existe aún
-            );
+            $imageResult = $this->imageHandler->processUserImage($fotoPath, null, null, null);
 
             if ($imageResult['updated'] && $imageResult['imageId']) {
-                // Campo image: usar sufijo Id para setear
                 $user->set('cFotopId', $imageResult['imageId']);
                 $user->set('avatarId', $imageResult['imageId']);
             }
-
             if ($imageResult['fotoPath'] !== null) {
                 $user->set('cFoto', $imageResult['fotoPath']);
             }
-            // ────────────────────────────────────────────────────────────────
 
             $this->entityManager->saveEntity($user);
-
             $this->assignUserToTeams($user, $teamId, $claId);
 
             $summary['users']['created']++;
@@ -217,7 +202,6 @@ class UserHandler
         $needsUpdate = false;
 
         $currentTeamId = $user->get('defaultTeamId');
-
         if ($currentTeamId && !$this->teamHandler->teamExists($currentTeamId)) {
             if ($user->get('isActive')) {
                 $user->set('isActive', false);
@@ -229,73 +213,44 @@ class UserHandler
         }
 
         $userData = $this->prepareUserData($usuarioExterno, $teamId, $rolesMap);
+        if (!$userData) return;
 
-        if (!$userData) {
-            return;
-        }
-
-        // Actualizar campos escalares
         foreach ($userData as $field => $newValue) {
-            if ($field === 'rolesIds') {
-                continue;
-            }
-            $normalizedCurrent = StringUtils::normalize($user->get($field));
-            $normalizedNew     = StringUtils::normalize($newValue);
-            if ($normalizedCurrent !== $normalizedNew) {
+            if ($field === 'rolesIds') continue;
+            if (StringUtils::normalize($user->get($field)) !== StringUtils::normalize($newValue)) {
                 $user->set($field, $newValue);
                 $needsUpdate = true;
                 $changes[]   = $field;
             }
         }
 
-        // Roles
         if ($this->updateUserRoles($user, $userData['rolesIds'] ?? [], $rolesMap)) {
             $needsUpdate = true;
             $changes[]   = "roles";
         }
 
-        // Contraseña
-        if (!empty($usuarioExterno['password'])) {
-            $currentPasswordHash = $user->get('password');
-            $plainPassword       = $usuarioExterno['password'];
-            if (empty($currentPasswordHash) || !password_verify($plainPassword, $currentPasswordHash)) {
-                $user->set('password', $this->passwordHash->hash($plainPassword));
-                $needsUpdate = true;
-                $changes[]   = "password";
-            }
-        }
-
-        // ── Imagen ──────────────────────────────────────────────────────────
+        // Imagen
         $fotoPath        = $usuarioExterno['fotoPath'] ?? null;
-        $currentImageId  = $user->get('cFotopId');  // campo image → sufijo Id
+        $currentImageId  = $user->get('cFotopId');
         $currentFotoPath = $user->get('cFoto');
         $currentAvatarId = $user->get('avatarId');
 
-        $imageResult = $this->imageHandler->processUserImage(
-            $fotoPath,
-            $currentImageId,
-            $currentFotoPath,
-            $currentAvatarId
-        );
+        $imageResult = $this->imageHandler->processUserImage($fotoPath, $currentImageId, $currentFotoPath, $currentAvatarId);
 
         if ($imageResult['updated']) {
             if ($imageResult['syncCFotopOnly']) {
-                // avatarId ya está bien, solo poblar cFotopId
                 $user->set('cFotopId', $imageResult['imageId']);
                 $changes[] = 'cFotop (sync)';
             } else {
-                // Actualización completa
                 if ($imageResult['imageId']) {
                     $user->set('cFotopId', $imageResult['imageId']);
                     $user->set('avatarId', $imageResult['imageId']);
                 }
                 $changes[] = 'imagen';
             }
-            // Actualizar o limpiar path raw
             $user->set('cFoto', $imageResult['fotoPath']);
             $needsUpdate = true;
         }
-        // ────────────────────────────────────────────────────────────────────
 
         // URLs
         $expectedQr     = 'https://referido.century21.com.ve/eb/?lerr='           . $userId;
@@ -320,12 +275,10 @@ class UserHandler
 
         if ($needsUpdate) {
             $this->entityManager->saveEntity($user);
-
             if ($user->get('defaultTeamId') !== $teamId) {
                 $this->assignUserToTeams($user, $teamId, $claId);
                 $changes[] = "equipos";
             }
-
             $summary['users']['updated']++;
             $this->log('updated', 'User', $userId, "usuario: ({$userId}) {$username}", 'success',
                        "Usuario actualizado: " . implode(', ', $changes), $configId);
@@ -343,19 +296,15 @@ class UserHandler
                 $currentRoleIds[] = $role->getId();
             }
         }
-
         $roles21onlineIds = array_values($rolesMap21online);
         $rolesExtras      = array_diff($currentRoleIds, $roles21onlineIds);
         $newRoleIds       = array_merge($rolesIds21online, $rolesExtras);
-
         sort($currentRoleIds);
         sort($newRoleIds);
-
         if ($currentRoleIds !== $newRoleIds) {
             $user->set('rolesIds', $newRoleIds);
             return true;
         }
-
         return false;
     }
 
@@ -365,36 +314,23 @@ class UserHandler
         $firstName = !empty($usuarioExterno['nombre'])
             ? StringUtils::capitalizeWords($usuarioExterno['nombre'])
             : StringUtils::capitalizeWords($usuarioExterno['username']);
-
         $lastName = StringUtils::combineApellidos(
             $usuarioExterno['apellidoP'] ?? null,
             $usuarioExterno['apellidoM'] ?? null
         );
-
-        $emailAddress = !empty($usuarioExterno['email'])
-            ? StringUtils::toLowerCase($usuarioExterno['email'])
-            : null;
-
-        $phoneNumber = !empty($usuarioExterno['telMovil'])
-            ? StringUtils::toLowerCase($usuarioExterno['telMovil'])
-            : null;
-
+        $emailAddress = !empty($usuarioExterno['email']) ? StringUtils::toLowerCase($usuarioExterno['email']) : null;
+        $phoneNumber = !empty($usuarioExterno['telMovil']) ? StringUtils::toLowerCase($usuarioExterno['telMovil']) : null;
         $team = $this->entityManager->getEntityById('Team', $teamId);
         if (!$team) {
-            $this->log('info', 'User', null, $userName, 'warning',
-                       "Equipo no encontrado: {$teamId}", null);
+            $this->log('info', 'User', null, $userName, 'warning', "Equipo no encontrado: {$teamId}", null);
             return null;
         }
-
         $puesto = $usuarioExterno['puesto'] ?? null;
         if (empty($puesto) || !isset($rolesMap[$puesto])) {
-            $this->log('info', 'User', null, $userName, 'warning',
-                       "Rol '{$puesto}' no encontrado", null);
+            $this->log('info', 'User', null, $userName, 'warning', "Rol '{$puesto}' no encontrado", null);
             return null;
         }
-
         $roleId = $rolesMap[$puesto];
-
         $userData = [
             'userName'      => $userName,
             'firstName'     => $firstName,
@@ -402,17 +338,9 @@ class UserHandler
             'isActive'      => true,
             'rolesIds'      => [$roleId],
         ];
-
-        if (!empty($lastName)) {
-            $userData['lastName'] = $lastName;
-        }
-        if (!empty($emailAddress)) {
-            $userData['emailAddress'] = $emailAddress;
-        }
-        if (!empty($phoneNumber)) {
-            $userData['phoneNumber'] = $phoneNumber;
-        }
-
+        if (!empty($lastName)) $userData['lastName'] = $lastName;
+        if (!empty($emailAddress)) $userData['emailAddress'] = $emailAddress;
+        if (!empty($phoneNumber)) $userData['phoneNumber'] = $phoneNumber;
         return $userData;
     }
 
@@ -420,11 +348,7 @@ class UserHandler
     {
         $oficina = $this->entityManager->getEntityById('Team', $oficinaId);
         $cla     = $this->entityManager->getEntityById('Team', $claId);
-
-        if (!$oficina || !$cla) {
-            return;
-        }
-
+        if (!$oficina || !$cla) return;
         try {
             $currentTeams = $user->get('teams');
             if ($currentTeams) {
@@ -434,116 +358,72 @@ class UserHandler
                         ->unrelate($currentTeam);
                 }
             }
-
             $this->entityManager->getRDBRepository('User')
                 ->getRelation($user, 'teams')
                 ->relate($oficina);
-
             $this->entityManager->getRDBRepository('User')
                 ->getRelation($user, 'teams')
                 ->relate($cla);
-
-        } catch (\Exception $e) {
-        }
+        } catch (\Exception $e) {}
     }
 
-    private function deactivateInactiveUsers(
-        array  $usuariosInactivos,
-        string $configId,
-        array  &$summary
-    ): void {
+    private function deactivateInactiveUsers(array $usuariosInactivos, string $configId, array &$summary): void
+    {
         $activeUsernames = [];
-        $activeUsers     = $this->entityManager->getRDBRepository('User')
-            ->where(['isActive' => true])
-            ->find();
-
+        $activeUsers     = $this->entityManager->getRDBRepository('User')->where(['isActive' => true])->find();
         foreach ($activeUsers as $activeUser) {
             $uid = $activeUser->getId();
             if (is_numeric($uid)) {
                 $activeUsernames[$activeUser->get('userName')] = $uid;
             }
         }
-
         $contadorDesactivados = 0;
-
         foreach ($usuariosInactivos as $usuarioInactivo) {
             try {
                 $userId   = (string) $usuarioInactivo['id'];
                 $username = StringUtils::toLowerCase($usuarioInactivo['username'] ?? 'Unknown');
-
                 $user = $this->entityManager->getEntityById('User', $userId);
-
                 if (!$user) {
-                    $user = $this->entityManager->getRDBRepository('User')
-                        ->where(['userName' => $username])
-                        ->findOne();
-
-                    if ($user && isset($activeUsernames[$username])) {
-                        continue;
-                    }
+                    $user = $this->entityManager->getRDBRepository('User')->where(['userName' => $username])->findOne();
+                    if ($user && isset($activeUsernames[$username])) continue;
                 }
-
                 if ($user && $user->get('isActive')) {
                     $user->set('isActive', false);
                     $this->entityManager->saveEntity($user);
-
                     $contadorDesactivados++;
                     $summary['users']['disabled']++;
-
-                    $this->log('disabled', 'User', $user->getId(),
-                               "usuario: ({$user->getId()}) {$user->get('userName')}", 'success',
+                    $this->log('disabled', 'User', $user->getId(), "usuario: ({$user->getId()}) {$user->get('userName')}", 'success',
                                "Usuario desactivado (inactivo en 21online)", $configId);
                 }
-
-            } catch (\Exception $e) {
-            }
+            } catch (\Exception $e) {}
         }
-
         if ($contadorDesactivados > 0) {
-            $this->log('info', 'User', null, 'Desactivados', 'success',
-                       "Total usuarios desactivados por inactividad: {$contadorDesactivados}", $configId);
+            $this->log('info', 'User', null, 'Desactivados', 'success', "Total usuarios desactivados por inactividad: {$contadorDesactivados}", $configId);
         }
     }
 
-    private function deactivateUsersWithoutTeam(
-        array  $processedUsers,
-        string $configId,
-        array  &$summary
-    ): void {
+    private function deactivateUsersWithoutTeam(array $processedUsers, string $configId, array &$summary): void
+    {
         $contadorDesactivados = 0;
         $users = $this->entityManager->getRDBRepository('User')->find();
-
         foreach ($users as $user) {
             $userId = $user->getId();
-
-            if (!is_numeric($userId)) {
-                continue;
-            }
-
-            if (isset($processedUsers[$userId])) {
-                continue;
-            }
-
+            if (!is_numeric($userId)) continue;
+            if (isset($processedUsers[$userId])) continue;
             $defaultTeamId = $user->get('defaultTeamId');
-
             if (!$defaultTeamId || !$this->teamHandler->teamExists($defaultTeamId)) {
                 if ($user->get('isActive')) {
                     $user->set('isActive', false);
                     $this->entityManager->saveEntity($user);
-
                     $contadorDesactivados++;
                     $summary['users']['disabled']++;
-
-                    $this->log('disabled', 'User', $userId,
-                               "usuario: ({$userId}) {$user->get('userName')}", 'success',
+                    $this->log('disabled', 'User', $userId, "usuario: ({$userId}) {$user->get('userName')}", 'success',
                                "Usuario desactivado (equipo no existe)", $configId);
                 }
             }
         }
-
         if ($contadorDesactivados > 0) {
-            $this->log('info', 'User', null, 'Desactivados', 'success',
-                       "Usuarios desactivados por equipo inexistente: {$contadorDesactivados}", $configId);
+            $this->log('info', 'User', null, 'Desactivados', 'success', "Usuarios desactivados por equipo inexistente: {$contadorDesactivados}", $configId);
         }
     }
 
@@ -554,39 +434,22 @@ class UserHandler
             $summary['users']['skipped']++;
             return false;
         }
-
         if (empty($usuarioExterno['username'])) {
-            $this->log('info', 'User', $usuarioExterno['id'],
-                       "id: ({$usuarioExterno['id']}) Unknown", 'warning',
-                       "Usuario ID {$usuarioExterno['id']} sin username", $configId);
+            $this->log('info', 'User', $usuarioExterno['id'], "id: ({$usuarioExterno['id']}) Unknown", 'warning', "Usuario ID {$usuarioExterno['id']} sin username", $configId);
             $summary['users']['skipped']++;
             return false;
         }
-
         if (empty($usuarioExterno['idAfiliados'])) {
-            $this->log('info', 'User', $usuarioExterno['id'],
-                       "id: ({$usuarioExterno['id']}) {$usuarioExterno['username']}", 'warning',
-                       "Usuario sin idAfiliados", $configId);
+            $this->log('info', 'User', $usuarioExterno['id'], "id: ({$usuarioExterno['id']}) {$usuarioExterno['username']}", 'warning', "Usuario sin idAfiliados", $configId);
             $summary['users']['skipped']++;
             return false;
         }
-
-        if (empty($usuarioExterno['password'])) {
-            $this->log('info', 'User', $usuarioExterno['id'],
-                       "id: ({$usuarioExterno['id']}) {$usuarioExterno['username']}", 'warning',
-                       "Usuario sin password", $configId);
-            $summary['users']['skipped']++;
-            return false;
-        }
-
+        // Validación de password eliminada
         if (empty($usuarioExterno['puesto'])) {
-            $this->log('info', 'User', $usuarioExterno['id'],
-                       "id: ({$usuarioExterno['id']}) {$usuarioExterno['username']}", 'warning',
-                       "Usuario sin puesto", $configId);
+            $this->log('info', 'User', $usuarioExterno['id'], "id: ({$usuarioExterno['id']}) {$usuarioExterno['username']}", 'warning', "Usuario sin puesto", $configId);
             $summary['users']['skipped']++;
             return false;
         }
-
         return true;
     }
 
@@ -605,21 +468,18 @@ class UserHandler
     {
         $map   = [];
         $roles = $this->entityManager->getRDBRepository('Role')->find();
-
         foreach ($roles as $role) {
             $roleName = $role->get('name');
             if (in_array($roleName, $rolesExternos)) {
                 $map[$roleName] = $role->getId();
             }
         }
-
         return $map;
     }
 
     private function getExistingUsersMap(): array
     {
         $map = [];
-
         try {
             $users = $this->entityManager->getRDBRepository('User')->find();
             foreach ($users as $user) {
@@ -628,9 +488,7 @@ class UserHandler
                     $map[$userId] = $user;
                 }
             }
-        } catch (\Exception $e) {
-        }
-
+        } catch (\Exception $e) {}
         return $map;
     }
 }

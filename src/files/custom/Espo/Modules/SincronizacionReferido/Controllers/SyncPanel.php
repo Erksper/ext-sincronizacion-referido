@@ -119,4 +119,51 @@ class SyncPanel extends Base
         }
     }
     
+    public function postActionSyncPropiedades(Request $request): array
+    {
+        try {
+            $data = $request->getParsedBody();
+            $tipo = $data->tipo ?? 'anual';
+            
+            $service = $this->recordServiceContainer->get('ExternalDbConfig');
+            $config = $service->getActiveConfigDecrypted();
+            
+            if (!$config) {
+                return [
+                    'success' => false,
+                    'message' => 'No hay configuración activa. Por favor, crea y activa una configuración primero.'
+                ];
+            }
+            
+            set_time_limit(1800);
+            ini_set('memory_limit', '1024M');
+            
+            $job = $this->injectableFactory->create(
+                'Espo\\Modules\\SincronizacionReferido\\Jobs\\SincronizarPropiedades'
+            );
+            
+            ob_start();
+            $job->run(['tipo' => $tipo]);
+            ob_end_clean();
+            
+            $mensaje = $tipo === 'anual' 
+                ? 'Sincronización de propiedades (últimos 12 meses) ejecutada correctamente.'
+                : 'Sincronización completa de propiedades ejecutada correctamente.';
+            
+            return [
+                'success' => true,
+                'message' => $mensaje . ' Revisa los logs de sincronización para ver los detalles.',
+                'details' => [
+                    'Tipo de sincronización: ' . ucfirst($tipo),
+                    'Ver detalles en: Menu > Logs de Sincronización'
+                ]
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Error al sincronizar propiedades: ' . $e->getMessage()
+            ];
+        }
+    }
 }
