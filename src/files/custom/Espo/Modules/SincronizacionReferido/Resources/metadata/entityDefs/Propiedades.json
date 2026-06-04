@@ -248,6 +248,12 @@
             "type": "link",
             "view": "views/fields/link",
             "readOnly": true
+        },
+        "fotoPrincipalUrl": {
+            "type": "varchar",
+            "maxLength": 500,
+            "readOnly": true,
+            "tooltip": "URL original de la foto en la BD externa"
         }
     },
     "links": {

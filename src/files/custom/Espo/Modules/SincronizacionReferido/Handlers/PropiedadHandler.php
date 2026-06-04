@@ -228,15 +228,16 @@ class PropiedadHandler
             $this->entityManager->saveEntity($propiedad);
             
             // Descargar y guardar la foto principal
-            $fotoAttachmentId = $this->downloadAndSavePropertyImage($pdo, $propiedadId);
-            if ($fotoAttachmentId) {
-                $propiedad->set('fotoPrincipalId', $fotoAttachmentId);
+            $fotoResult = $this->downloadAndSavePropertyImage($pdo, $propiedadId, null);
+            if ($fotoResult['attachmentId']) {
+                $propiedad->set('fotoPrincipalId', $fotoResult['attachmentId']);
+                $propiedad->set('fotoPrincipalUrl', $fotoResult['url']);
                 $this->entityManager->saveEntity($propiedad);
             }
 
             $summary['propiedades']['created']++;
             $this->log('created', 'Propiedades', $propiedadId, $propiedadData['name'], 'success',
-                'Propiedad creada' . ($fotoAttachmentId ? ' (con foto)' : ' (sin foto)'), $configId);
+                'Propiedad creada' . ($fotoResult['attachmentId'] ? ' (con foto)' : ' (sin foto)'), $configId);
 
         } catch (\Exception $e) {
             $summary['propiedades']['errors']++;
@@ -278,12 +279,14 @@ class PropiedadHandler
             }
         }
 
-        // Verificar si la foto cambió
-        $currentFotoId = $propiedad->get('fotoPrincipalId');
-        $newFotoId = $this->downloadAndSavePropertyImage($pdo, $propiedad->getId());
+        // Verificar si la foto cambió usando la URL guardada
+        $currentFotoUrl = $propiedad->get('fotoPrincipalUrl');
+        $fotoResult = $this->downloadAndSavePropertyImage($pdo, $propiedad->getId(), $currentFotoUrl);
         
-        if ($newFotoId && $newFotoId !== $currentFotoId) {
-            $propiedad->set('fotoPrincipalId', $newFotoId);
+        if ($fotoResult['changed'] && $fotoResult['attachmentId']) {
+            // La foto cambió, actualizar
+            $propiedad->set('fotoPrincipalId', $fotoResult['attachmentId']);
+            $propiedad->set('fotoPrincipalUrl', $fotoResult['url']);
             $needsUpdate = true;
             $changes[] = "fotoPrincipal";
         }
@@ -320,9 +323,19 @@ class PropiedadHandler
 
     /**
      * Obtiene y descarga la foto principal de una propiedad desde la tabla 'fotos'
+     * @param PDO $pdo Conexión a BD externa
+     * @param string $propiedadId ID de la propiedad
+     * @param string|null $currentUrl URL actual guardada para comparar
+     * @return array{attachmentId: string|null, url: string|null, changed: bool}
      */
-    private function downloadAndSavePropertyImage(PDO $pdo, string $propiedadId): ?string
+    private function downloadAndSavePropertyImage(PDO $pdo, string $propiedadId, ?string $currentUrl = null): array
     {
+        $result = [
+            'attachmentId' => null,
+            'url' => null,
+            'changed' => false
+        ];
+        
         try {
             $sql = "SELECT large FROM fotos WHERE idPropiedades = :propiedadId AND orden = 1 LIMIT 1";
             $stmt = $pdo->prepare($sql);
@@ -330,15 +343,25 @@ class PropiedadHandler
             $foto = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$foto || empty($foto['large'])) {
-                return null;
+                return $result;
             }
             
             $fotoPath = $foto['large'];
             $url = "https://venezuela.21online.lat/" . ltrim($fotoPath, '/');
+            $result['url'] = $url;
+            
+            // Comparar si la URL cambió
+            if ($currentUrl === $url) {
+                // La foto no ha cambiado
+                return $result;
+            }
+            
+            $result['changed'] = true;
+            
             $imageContent = @file_get_contents($url);
             
             if ($imageContent === false || strlen($imageContent) === 0) {
-                return null;
+                return $result;
             }
             
             $fileInfo = pathinfo($fotoPath);
@@ -347,7 +370,7 @@ class PropiedadHandler
             
             $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
             if (!in_array($extension, $allowedExtensions)) {
-                return null;
+                return $result;
             }
             
             $attachment = $this->entityManager->getNewEntity('Attachment');
@@ -371,15 +394,16 @@ class PropiedadHandler
             
             if (file_put_contents($filePath, $imageContent) === false) {
                 $this->entityManager->removeEntity($attachment);
-                return null;
+                return $result;
             }
             
-            return $attachment->getId();
+            $result['attachmentId'] = $attachment->getId();
+            return $result;
             
         } catch (\Exception $e) {
             $this->log('error', 'Propiedades', $propiedadId, "ID {$propiedadId}", 'error',
                 "Error descargando foto: " . $e->getMessage(), null);
-            return null;
+            return $result;
         }
     }
 
