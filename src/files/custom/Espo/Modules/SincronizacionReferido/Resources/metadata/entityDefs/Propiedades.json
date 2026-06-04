@@ -243,6 +243,11 @@
         "teams": {
             "type": "linkMultiple",
             "view": "views/fields/teams"
+        },
+        "fotoPrincipal": {
+            "type": "link",
+            "view": "views/fields/link",
+            "readOnly": true
         }
     },
     "links": {
@@ -288,6 +293,10 @@
             "entity": "Team",
             "relationName": "EntityTeam",
             "layoutRelationshipsDisabled": true
+        },
+        "fotoPrincipal": {
+            "type": "belongsTo",
+            "entity": "Attachment"
         }
     },
     "collection": {

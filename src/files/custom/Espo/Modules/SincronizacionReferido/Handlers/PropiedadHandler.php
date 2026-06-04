@@ -4,6 +4,7 @@ namespace Espo\Modules\SincronizacionReferido\Handlers;
 use Espo\ORM\EntityManager;
 use Espo\Modules\SincronizacionReferido\Utils\StringUtils;
 use Espo\Modules\SincronizacionReferido\Traits\Loggable;
+use PDO;
 
 class PropiedadHandler
 {
@@ -54,7 +55,7 @@ class PropiedadHandler
     }
 
     public function syncPropiedades(
-        \PDO   $pdo,
+        PDO    $pdo,
         string $syncType,
         string $configId,
         array  &$summary
@@ -69,7 +70,7 @@ class PropiedadHandler
         $sqlCount = "SELECT COUNT(*) as total FROM propiedades {$whereClause}";
         $stmtCount = $pdo->prepare($sqlCount);
         $stmtCount->execute();
-        $totalRegistros = $stmtCount->fetch(\PDO::FETCH_ASSOC)['total'];
+        $totalRegistros = $stmtCount->fetch(PDO::FETCH_ASSOC)['total'];
 
         if ($totalRegistros == 0) {
             $this->log('info', 'Propiedades', null, 'Sincronización', 'success',
@@ -108,11 +109,11 @@ class PropiedadHandler
         for ($pagina = 0; $pagina < $totalPaginas; $pagina++) {
             $offset = $pagina * $pageSize;
 
-            $stmt->bindValue(1, $pageSize, \PDO::PARAM_INT);
-            $stmt->bindValue(2, $offset, \PDO::PARAM_INT);
+            $stmt->bindValue(1, $pageSize, PDO::PARAM_INT);
+            $stmt->bindValue(2, $offset, PDO::PARAM_INT);
             $stmt->execute();
 
-            $propiedades = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            $propiedades = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             if (($pagina + 1) % 5 == 0 || $pagina == 0 || $pagina == $totalPaginas - 1) {
                 $this->log('info', 'Propiedades', null, 'Progreso', 'success',
@@ -123,7 +124,7 @@ class PropiedadHandler
             foreach ($propiedades as $propiedadExterna) {
                 $procesadas++;
                 try {
-                    $this->syncPropiedad($propiedadExterna, $configId, $summary);
+                    $this->syncPropiedad($propiedadExterna, $configId, $summary, $pdo);
                 } catch (\Exception $e) {
                     $summary['propiedades']['errors']++;
                     $idProp = $propiedadExterna['id'] ?? 'Unknown';
@@ -155,7 +156,8 @@ class PropiedadHandler
     private function syncPropiedad(
         array  $propiedadExterna,
         string $configId,
-        array  &$summary
+        array  &$summary,
+        PDO    $pdo
     ): void {
         if (!$this->validatePropiedadData($propiedadExterna, $summary, $configId)) {
             return;
@@ -165,9 +167,9 @@ class PropiedadHandler
         $propiedad   = $this->entityManager->getEntityById('Propiedades', $propiedadId);
 
         if (!$propiedad) {
-            $this->createPropiedad($propiedadExterna, $propiedadId, $configId, $summary);
+            $this->createPropiedad($propiedadExterna, $propiedadId, $configId, $summary, $pdo);
         } else {
-            $this->updatePropiedad($propiedad, $propiedadExterna, $configId, $summary);
+            $this->updatePropiedad($propiedad, $propiedadExterna, $configId, $summary, $pdo);
         }
     }
 
@@ -203,7 +205,8 @@ class PropiedadHandler
         array  $propiedadExterna,
         string $propiedadId,
         string $configId,
-        array  &$summary
+        array  &$summary,
+        PDO    $pdo
     ): void {
         $propiedadData = $this->preparePropiedadData($propiedadExterna);
 
@@ -217,17 +220,23 @@ class PropiedadHandler
             $propiedad->set('id', $propiedadId);
             $propiedad->set($propiedadData);
 
-            // Asignar equipos antes del primer guardado (solo creación)
             $teamIds = $this->getValidTeamIds($propiedadData['assignedUserId']);
             if (!empty($teamIds)) {
                 $propiedad->set('teamsIds', $teamIds);
             }
 
             $this->entityManager->saveEntity($propiedad);
+            
+            // Descargar y guardar la foto principal
+            $fotoAttachmentId = $this->downloadAndSavePropertyImage($pdo, $propiedadId);
+            if ($fotoAttachmentId) {
+                $propiedad->set('fotoPrincipalId', $fotoAttachmentId);
+                $this->entityManager->saveEntity($propiedad);
+            }
 
             $summary['propiedades']['created']++;
             $this->log('created', 'Propiedades', $propiedadId, $propiedadData['name'], 'success',
-                'Propiedad creada', $configId);
+                'Propiedad creada' . ($fotoAttachmentId ? ' (con foto)' : ' (sin foto)'), $configId);
 
         } catch (\Exception $e) {
             $summary['propiedades']['errors']++;
@@ -241,7 +250,8 @@ class PropiedadHandler
         $propiedad,
         array  $propiedadExterna,
         string $configId,
-        array  &$summary
+        array  &$summary,
+        PDO    $pdo
     ): void {
         $propiedadData = $this->preparePropiedadData($propiedadExterna);
 
@@ -268,22 +278,29 @@ class PropiedadHandler
             }
         }
 
-        // ---- Manejo de equipos con logging detallado ----
+        // Verificar si la foto cambió
+        $currentFotoId = $propiedad->get('fotoPrincipalId');
+        $newFotoId = $this->downloadAndSavePropertyImage($pdo, $propiedad->getId());
+        
+        if ($newFotoId && $newFotoId !== $currentFotoId) {
+            $propiedad->set('fotoPrincipalId', $newFotoId);
+            $needsUpdate = true;
+            $changes[] = "fotoPrincipal";
+        }
+
+        // Manejo de equipos
         $oldTeamIds = $this->getCurrentTeamIds($propiedad);
         $newTeamIds = $this->getValidTeamIds($propiedadData['assignedUserId']);
         $teamsChanged = $this->teamListsDiffer($oldTeamIds, $newTeamIds);
 
         if ($teamsChanged) {
-            // Generar descripción legible del cambio de equipos
             $oldTeamsDesc = $this->getTeamDescriptions($oldTeamIds);
             $newTeamsDesc = $this->getTeamDescriptions($newTeamIds);
             $changes[] = "equipos (de [{$oldTeamsDesc}] a [{$newTeamsDesc}])";
-            
             $propiedad->set('teamsIds', $newTeamIds);
             $needsUpdate = true;
         }
 
-        // Solo guardar si hay algún cambio
         if ($needsUpdate) {
             try {
                 $this->entityManager->saveEntity($propiedad);
@@ -301,6 +318,82 @@ class PropiedadHandler
         }
     }
 
+    /**
+     * Obtiene y descarga la foto principal de una propiedad desde la tabla 'fotos'
+     */
+    private function downloadAndSavePropertyImage(PDO $pdo, string $propiedadId): ?string
+    {
+        try {
+            $sql = "SELECT large FROM fotos WHERE idPropiedades = :propiedadId AND orden = 1 LIMIT 1";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([':propiedadId' => $propiedadId]);
+            $foto = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$foto || empty($foto['large'])) {
+                return null;
+            }
+            
+            $fotoPath = $foto['large'];
+            $url = "https://venezuela.21online.lat/" . ltrim($fotoPath, '/');
+            $imageContent = @file_get_contents($url);
+            
+            if ($imageContent === false || strlen($imageContent) === 0) {
+                return null;
+            }
+            
+            $fileInfo = pathinfo($fotoPath);
+            $extension = strtolower($fileInfo['extension'] ?? 'jpg');
+            $fileName = $fileInfo['basename'] ?? 'property_' . $propiedadId . '.' . $extension;
+            
+            $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+            if (!in_array($extension, $allowedExtensions)) {
+                return null;
+            }
+            
+            $attachment = $this->entityManager->getNewEntity('Attachment');
+            $attachment->set([
+                'name' => $fileName,
+                'type' => $this->getImageMimeType($extension),
+                'role' => 'Attachment',
+                'size' => strlen($imageContent),
+                'relatedType' => 'Propiedades',
+                'relatedId' => $propiedadId,
+                'field' => 'fotoPrincipal'
+            ]);
+            
+            $this->entityManager->saveEntity($attachment);
+            
+            $filePath = "data/upload/" . $attachment->getId();
+            $dir = dirname($filePath);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0777, true);
+            }
+            
+            if (file_put_contents($filePath, $imageContent) === false) {
+                $this->entityManager->removeEntity($attachment);
+                return null;
+            }
+            
+            return $attachment->getId();
+            
+        } catch (\Exception $e) {
+            $this->log('error', 'Propiedades', $propiedadId, "ID {$propiedadId}", 'error',
+                "Error descargando foto: " . $e->getMessage(), null);
+            return null;
+        }
+    }
+
+    private function getImageMimeType(string $extension): string
+    {
+        return [
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png'  => 'image/png',
+            'gif'  => 'image/gif',
+            'webp' => 'image/webp',
+        ][$extension] ?? 'image/jpeg';
+    }
+
     private function preparePropiedadData(array $ext): ?array
     {
         $tipoOperacion = $ext['tipoOperacion'] ?? 'N/A';
@@ -311,7 +404,6 @@ class PropiedadHandler
         $fechaAlta   = !empty($ext['fechaAlta']) ? $ext['fechaAlta'] : date('Y-m-d H:i:s');
         $propiedadId = (string)$ext['id'];
 
-        // Campos base (obligatorios)
         $data = [
             'name'              => $name,
             'idOficinaId'       => (string)$ext['idAfiliados'],
@@ -327,7 +419,6 @@ class PropiedadHandler
             'link21Online'      => 'https://venezuela.21online.lat/propiedades/editar/' . $propiedadId,
         ];
 
-        // Campos opcionales originales
         $camposOpcionalesOriginales = [
             'fechaModificacion' => 'fechaModificacion',
             'comision'          => 'comision',
@@ -356,7 +447,6 @@ class PropiedadHandler
             }
         }
 
-        // Nuevos campos opcionales de cierre
         $nuevosCampos = [
             'clave'                  => 'clave',
             'tipoCierre'             => 'tipoCierre',
@@ -373,16 +463,13 @@ class PropiedadHandler
             }
         }
 
-        // Booleanos nuevos (siempre se mapean, incluso si son 0)
         $data['compartidoConC21'] = !empty($ext['compartidoConC21']);
         $data['referidoConC21']   = !empty($ext['referidoConC21']);
 
-        // precioCierre como currency
         if (isset($ext['precioCierre']) && $ext['precioCierre'] !== '') {
             $data['precioCierre'] = $ext['precioCierre'];
         }
 
-        // Links opcionales nuevos (solo si tienen valor entero válido)
         if (!empty($ext['idAsesorCierre'])) {
             $data['idAsesorCierreId'] = (string)$ext['idAsesorCierre'];
         }
@@ -392,24 +479,14 @@ class PropiedadHandler
         if (!empty($ext['idAfiliadosReferida'])) {
             $data['idAfiliadosReferidaId'] = (string)$ext['idAfiliadosReferida'];
         }
-        // Los links a Clientes se mapean directamente por ID
-        if (!empty($ext['idClientesComprador'])) {
-            $data['idClientesCompradorId'] = (string)$ext['idClientesComprador'];
-        }
-        if (!empty($ext['idClientesVendedor'])) {
-            $data['idClientesVendedorId'] = (string)$ext['idClientesVendedor'];
-        }
 
         return $data;
     }
 
     // -------------------------------------------------------------------------
-    // Helpers de equipos (mejorados)
+    // Helpers de equipos
     // -------------------------------------------------------------------------
 
-    /**
-     * Obtiene los IDs de los equipos asignados al usuario (solo los que existen en el sistema)
-     */
     private function getValidTeamIds(string $assignedUserId): array
     {
         if (empty($assignedUserId)) {
@@ -423,7 +500,6 @@ class PropiedadHandler
 
         $teamIds = [];
         
-        // Equipos directos del usuario
         $teams = $asesor->get('teams');
         if ($teams) {
             foreach ($teams as $team) {
@@ -434,7 +510,6 @@ class PropiedadHandler
             }
         }
 
-        // Equipo por defecto
         $defaultTeamId = $asesor->get('defaultTeamId');
         if ($defaultTeamId && $this->teamExists($defaultTeamId)) {
             $defaultIdStr = (string)$defaultTeamId;
@@ -446,18 +521,12 @@ class PropiedadHandler
         return array_unique($teamIds);
     }
 
-    /**
-     * Verifica si un equipo existe en la base de datos
-     */
     private function teamExists(string $teamId): bool
     {
         $team = $this->entityManager->getEntityById('Team', $teamId);
         return $team !== null;
     }
 
-    /**
-     * Obtiene los IDs actuales de los equipos de la propiedad
-     */
     private function getCurrentTeamIds($propiedad): array
     {
         $currentTeams = $propiedad->get('teams');
@@ -470,9 +539,6 @@ class PropiedadHandler
         return array_unique($ids);
     }
 
-    /**
-     * Compara dos listas de equipos (normalizadas)
-     */
     private function teamListsDiffer(array $list1, array $list2): bool
     {
         $list1 = array_unique(array_map('strval', $list1));
@@ -482,10 +548,6 @@ class PropiedadHandler
         return $list1 !== $list2;
     }
 
-    /**
-     * Genera una descripción legible de una lista de IDs de equipos
-     * Ejemplo: "Llano Andes (CLA5), Caracas (CLA1)"
-     */
     private function getTeamDescriptions(array $teamIds): string
     {
         if (empty($teamIds)) {
@@ -506,7 +568,7 @@ class PropiedadHandler
     }
 
     // -------------------------------------------------------------------------
-    // Normalización de valores para comparación
+    // Normalización de valores
     // -------------------------------------------------------------------------
 
     private function normalizeValue($value, string $field): string

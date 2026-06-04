@@ -1,7 +1,7 @@
 {
     "entity": true,
     "layouts": true,
-    "module": "Sincronizacion",
+    "module": "SincronizacionReferido",
     "type": "Base",
     "isCustom": true,
     "isAdmin": false,

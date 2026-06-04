@@ -1,5 +1,5 @@
 {
   "beforeSaveHookClassNameList": [
-    "Espo\\Modules\\Sincronizacion\\Hooks\\ExternalDbConfig\\BeforeSave"
+    "Espo\\Modules\\SincronizacionReferido\\Hooks\\ExternalDbConfig\\BeforeSave"
   ]
 }
